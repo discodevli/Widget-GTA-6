@@ -327,11 +327,16 @@ jobs:
           }
           EOF
           # --- images : les photos envoyées à la racine du dépôt ---
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+          fi
+          IM=convert
+          command -v magick >/dev/null 2>&1 && IM=magick
           IMGS=""
           i=0
           while IFS= read -r f; do
             i=$((i+1)); [ $i -gt 6 ] && break
-            convert "../$f" -auto-orient -resize 1200x -quality 80 app/src/main/res/drawable-nodpi/img_$i.jpg
+            $IM "../$f" -auto-orient -resize 1200x -quality 80 app/src/main/res/drawable-nodpi/img_$i.jpg
             IMGS="$IMGS        <ImageView android:layout_width=\"match_parent\" android:layout_height=\"match_parent\" android:scaleType=\"centerCrop\" android:src=\"@drawable/img_$i\" />
           "
           done < <(cd .. && ls | grep -iE '\.(jpe?g|png)$' | sort)
@@ -393,7 +398,4 @@ jobs:
                           </ViewFlipper>
                           <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                               android:text="SEC" android:textColor="#CCFFFFFF" android:textSize="8sp" android:letterSpacing="0.2" />
-                      </LinearLayout>
-                  </LinearLayout>
-                  <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
-                      android:orientation="horizontal" android:gravity="center_vertical" android:layout_
+                    
