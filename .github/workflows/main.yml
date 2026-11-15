@@ -1,0 +1,399 @@
+name: Build APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generer le projet
+        run: |
+          set -e
+          mkdir -p proj && cd proj
+          mkdir -p app/src/main/java/com/discodevli/gtavi app/src/main/res/drawable app/src/main/res/drawable-nodpi app/src/main/res/layout app/src/main/res/xml
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "GTAVIWidget"
+          include(":app")
+          EOF
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          printf 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2g\n' > gradle.properties
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.discodevli.gtavi"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.discodevli.gtavi"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="GTA VI Countdown" android:icon="@android:drawable/ic_menu_recent_history">
+                  <activity android:name=".LaunchMusicActivity" android:exported="false"
+                      android:theme="@android:style/Theme.Translucent.NoTitleBar"
+                      android:excludeFromRecents="true" android:taskAffinity="" />
+                  <activity android:name=".ConfigActivity" android:exported="true"
+                      android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+                      </intent-filter>
+                  </activity>
+                  <receiver android:name=".CountdownWidget" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                      </intent-filter>
+                      <meta-data android:name="android.appwidget.provider" android:resource="@xml/countdown_widget_info" />
+                  </receiver>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/res/xml/countdown_widget_info.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="250dp"
+              android:minHeight="40dp"
+              android:targetCellWidth="4"
+              android:targetCellHeight="1"
+              android:updatePeriodMillis="1800000"
+              android:configure="com.discodevli.gtavi.ConfigActivity"
+              android:widgetFeatures="reconfigurable"
+              android:initialLayout="@layout/widget_countdown"
+              android:resizeMode="horizontal|vertical"
+              android:widgetCategory="home_screen" />
+          EOF
+          cat > app/src/main/res/drawable/scrim.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:startColor="#B32B0A5E" android:centerColor="#80B02A8F" android:endColor="#66FF7A5E" android:angle="0" />
+          </shape>
+          EOF
+          cat > app/src/main/res/drawable/glass.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:startColor="#66FFFFFF" android:endColor="#1AFFFFFF" android:angle="270" />
+              <stroke android:width="1dp" android:color="#8CFFFFFF" />
+              <corners android:radius="16dp" />
+          </shape>
+          EOF
+          cat > app/src/main/java/com/discodevli/gtavi/Opts.kt <<'EOF'
+          package com.discodevli.gtavi
+
+          import android.content.Context
+
+          object Opts {
+              val items = listOf(
+                  Triple("d", "Jours", true),
+                  Triple("h", "Heures", true),
+                  Triple("m", "Minutes", true),
+                  Triple("s", "Secondes (en direct)", true),
+                  Triple("tm", "Total en minutes", true),
+                  Triple("th", "Total en heures", false),
+                  Triple("tc", "Chrono total H:MM:SS (en direct)", false)
+              )
+
+              fun get(context: Context, id: Int, key: String): Boolean {
+                  val def = items.first { it.first == key }.third
+                  return context.getSharedPreferences("gta6", Context.MODE_PRIVATE).getBoolean(id.toString() + ":" + key, def)
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/discodevli/gtavi/ConfigActivity.kt <<'EOF'
+          package com.discodevli.gtavi
+
+          import android.app.Activity
+          import android.appwidget.AppWidgetManager
+          import android.content.Intent
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.CheckBox
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+
+          class ConfigActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setResult(RESULT_CANCELED)
+                  val id = intent?.extras?.getInt(
+                      AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID
+                  ) ?: AppWidgetManager.INVALID_APPWIDGET_ID
+                  if (id == AppWidgetManager.INVALID_APPWIDGET_ID) {
+                      finish()
+                      return
+                  }
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setPadding(48, 96, 48, 48)
+                  root.setBackgroundColor(Color.parseColor("#12031F"))
+
+                  val title = TextView(this)
+                  title.text = "GTA VI  ·  Ton widget"
+                  title.setTextColor(Color.parseColor("#FF4FA3"))
+                  title.textSize = 24f
+                  root.addView(title)
+
+                  val sub = TextView(this)
+                  sub.text = "Coche ce que tu veux afficher"
+                  sub.setTextColor(Color.parseColor("#7DF9FF"))
+                  sub.textSize = 14f
+                  sub.setPadding(0, 8, 0, 24)
+                  root.addView(sub)
+
+                  val boxes = ArrayList<CheckBox>()
+                  for (item in Opts.items) {
+                      val cb = CheckBox(this)
+                      cb.text = item.second
+                      cb.setTextColor(Color.WHITE)
+                      cb.textSize = 18f
+                      cb.setPadding(0, 18, 0, 18)
+                      cb.isChecked = Opts.get(this, id, item.first)
+                      root.addView(cb)
+                      boxes.add(cb)
+                  }
+
+                  val save = Button(this)
+                  save.text = "Enregistrer"
+                  save.setOnClickListener {
+                      val e = getSharedPreferences("gta6", MODE_PRIVATE).edit()
+                      for (i in Opts.items.indices) {
+                          e.putBoolean(id.toString() + ":" + Opts.items[i].first, boxes[i].isChecked)
+                      }
+                      e.apply()
+                      renderWidgets(this, AppWidgetManager.getInstance(this), intArrayOf(id))
+                      setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id))
+                      finish()
+                  }
+                  root.addView(save)
+
+                  val scroll = ScrollView(this)
+                  scroll.addView(root)
+                  setContentView(scroll)
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/discodevli/gtavi/LaunchMusicActivity.kt <<'EOF'
+          package com.discodevli.gtavi
+
+          import android.app.Activity
+          import android.content.ActivityNotFoundException
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+
+          class LaunchMusicActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val uri = Uri.parse("https://music.youtube.com/watch?v=JWxoRY7AFSw&si=N76-U1P_i2JVwK54")
+                  val ytm = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.apps.youtube.music")
+                  try {
+                      startActivity(ytm)
+                  } catch (e: ActivityNotFoundException) {
+                      startActivity(Intent(Intent.ACTION_VIEW, uri))
+                  }
+                  finish()
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/discodevli/gtavi/CountdownWidget.kt <<'EOF'
+          package com.discodevli.gtavi
+
+          import android.app.AlarmManager
+          import android.app.PendingIntent
+          import android.appwidget.AppWidgetManager
+          import android.appwidget.AppWidgetProvider
+          import android.content.ComponentName
+          import android.content.Context
+          import android.content.Intent
+          import android.os.SystemClock
+          import android.view.View
+          import android.widget.RemoteViews
+          import java.text.NumberFormat
+          import java.time.ZoneId
+          import java.time.ZonedDateTime
+          import java.util.Locale
+
+          const val ACTION_TICK = "com.discodevli.gtavi.TICK"
+
+          fun tickIntent(context: Context): PendingIntent {
+              val i = Intent(context, CountdownWidget::class.java).setAction(ACTION_TICK)
+              return PendingIntent.getBroadcast(
+                  context, 1, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+              )
+          }
+
+          fun vis(on: Boolean): Int = if (on) View.VISIBLE else View.GONE
+
+          fun renderWidgets(context: Context, manager: AppWidgetManager, ids: IntArray) {
+              if (ids.isEmpty()) return
+              val now = System.currentTimeMillis()
+              val target = ZonedDateTime.of(2026, 11, 19, 0, 0, 0, 0, ZoneId.of("Europe/Paris"))
+                  .toInstant().toEpochMilli()
+              val r = (target - now).coerceAtLeast(0L)
+              val days = r / 86_400_000L
+              val hours = (r / 3_600_000L) % 24
+              val mins = (r / 60_000L) % 60
+              val secs = ((r / 1000L) % 60).toInt()
+              val nf = NumberFormat.getIntegerInstance(Locale.FRANCE)
+              val totalMin = nf.format(r / 60_000L)
+              val totalHours = nf.format(r / 3_600_000L)
+
+              val open = PendingIntent.getActivity(
+                  context, 0, Intent(context, LaunchMusicActivity::class.java),
+                  PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+              )
+              for (id in ids) {
+                  val v = RemoteViews(context.packageName, R.layout.widget_countdown)
+                  v.setOnClickPendingIntent(R.id.root, open)
+                  v.setOnClickPendingIntent(R.id.overlay, open)
+
+                  v.setViewVisibility(R.id.cell_d, vis(Opts.get(context, id, "d")))
+                  v.setViewVisibility(R.id.cell_h, vis(Opts.get(context, id, "h")))
+                  v.setViewVisibility(R.id.cell_m, vis(Opts.get(context, id, "m")))
+                  v.setViewVisibility(R.id.cell_s, vis(Opts.get(context, id, "s")))
+
+                  v.setTextViewText(R.id.d, days.toString())
+                  v.setTextViewText(R.id.h, String.format("%02d", hours))
+                  v.setTextViewText(R.id.m, String.format("%02d", mins))
+                  // le ViewFlipper des secondes compte à rebours tout seul (59 -> 00)
+                  v.setDisplayedChild(R.id.secs, 59 - secs)
+
+                  val parts = ArrayList<String>()
+                  if (Opts.get(context, id, "tm")) parts.add(totalMin + " min")
+                  if (Opts.get(context, id, "th")) parts.add(totalHours + " h")
+                  var line = "GTA VI"
+                  if (parts.isNotEmpty()) line = line + "  ·  " + parts.joinToString("  ·  ")
+                  v.setTextViewText(R.id.total, line)
+
+                  val chronoOn = Opts.get(context, id, "tc")
+                  v.setViewVisibility(R.id.chrono, vis(chronoOn))
+                  if (chronoOn) {
+                      v.setChronometerCountDown(R.id.chrono, true)
+                      v.setChronometer(R.id.chrono, SystemClock.elapsedRealtime() + r, null, r > 0)
+                  }
+
+                  // une nouvelle image chaque minute
+                  v.setDisplayedChild(R.id.flipper, ((now / 60_000L) % IMAGE_COUNT).toInt())
+                  manager.updateAppWidget(id, v)
+              }
+              if (r > 0) {
+                  val next = (now / 60_000L + 1) * 60_000L + 300L
+                  val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                  am.setAndAllowWhileIdle(AlarmManager.RTC, next, tickIntent(context))
+              }
+          }
+
+          class CountdownWidget : AppWidgetProvider() {
+
+              override fun onReceive(context: Context, intent: Intent) {
+                  super.onReceive(context, intent)
+                  if (intent.action == ACTION_TICK) {
+                      val m = AppWidgetManager.getInstance(context)
+                      val ids = m.getAppWidgetIds(ComponentName(context, CountdownWidget::class.java))
+                      renderWidgets(context, m, ids)
+                  }
+              }
+
+              override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+                  renderWidgets(context, manager, ids)
+              }
+
+              override fun onDisabled(context: Context) {
+                  val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                  am.cancel(tickIntent(context))
+              }
+          }
+          EOF
+          # --- images : les photos envoyées à la racine du dépôt ---
+          IMGS=""
+          i=0
+          while IFS= read -r f; do
+            i=$((i+1)); [ $i -gt 6 ] && break
+            convert "../$f" -auto-orient -resize 1200x -quality 80 app/src/main/res/drawable-nodpi/img_$i.jpg
+            IMGS="$IMGS        <ImageView android:layout_width=\"match_parent\" android:layout_height=\"match_parent\" android:scaleType=\"centerCrop\" android:src=\"@drawable/img_$i\" />
+          "
+          done < <(cd .. && ls | grep -iE '\.(jpe?g|png)$' | sort)
+          [ -n "$IMGS" ] || { echo "Aucune image trouvée"; exit 1; }
+          printf 'package com.discodevli.gtavi\n\nconst val IMAGE_COUNT = %s\n' "$i" > app/src/main/java/com/discodevli/gtavi/Constants.kt
+          SECS=""
+          for s in $(seq 59 -1 0); do
+            SECS="$SECS            <TextView android:layout_width=\"match_parent\" android:layout_height=\"wrap_content\" android:gravity=\"center\" android:text=\"$(printf '%02d' $s)\" android:textColor=\"#FFFFFF\" android:textSize=\"26sp\" android:fontFamily=\"sans-serif-medium\" android:shadowColor=\"#FF4FA3\" android:shadowRadius=\"10\" />
+          "
+          done
+          cell() { # $1=id de la case  $2=id du chiffre  $3=couleur  $4=libellé
+          cat <<XML
+                      <LinearLayout android:id="@+id/$1" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                          android:layout_margin="3dp" android:paddingTop="3dp" android:paddingBottom="3dp"
+                          android:orientation="vertical" android:gravity="center" android:background="@drawable/glass">
+                          <TextView android:id="@+id/$2" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                              android:textColor="$3" android:textSize="26sp" android:fontFamily="sans-serif-medium"
+                              android:shadowColor="#FF4FA3" android:shadowRadius="10" />
+                          <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                              android:text="$4" android:textColor="#CCFFFFFF" android:textSize="8sp" android:letterSpacing="0.2" />
+                      </LinearLayout>
+          XML
+          }
+          {
+          cat <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/root"
+              android:layout_width="match_parent" android:layout_height="match_parent">
+              <ViewFlipper
+                  android:id="@+id/flipper"
+                  android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:autoStart="false">
+          EOF
+          printf '%s' "$IMGS"
+          cat <<'EOF'
+              </ViewFlipper>
+              <LinearLayout
+                  android:id="@+id/overlay"
+                  android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:orientation="vertical" android:gravity="center"
+                  android:background="@drawable/scrim" android:padding="5dp">
+                  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:orientation="horizontal">
+          EOF
+          cell cell_d d "#FFD36B" "JOURS"
+          cell cell_h h "#FFFFFF" "HEURES"
+          cell cell_m m "#FFFFFF" "MIN"
+          cat <<'EOF'
+                      <LinearLayout android:id="@+id/cell_s" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                          android:layout_margin="3dp" android:paddingTop="3dp" android:paddingBottom="3dp"
+                          android:orientation="vertical" android:gravity="center" android:background="@drawable/glass">
+                          <ViewFlipper android:id="@+id/secs"
+                              android:layout_width="match_parent" android:layout_height="wrap_content"
+                              android:autoStart="true" android:flipInterval="1000">
+          EOF
+          printf '%s' "$SECS"
+          cat <<'EOF'
+                          </ViewFlipper>
+                          <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                              android:text="SEC" android:textColor="#CCFFFFFF" android:textSize="8sp" android:letterSpacing="0.2" />
+                      </LinearLayout>
+                  </LinearLayout>
+                  <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                      android:orientation="horizontal" android:gravity="center_vertical" android:layout_
